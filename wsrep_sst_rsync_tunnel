@@ -103,8 +103,13 @@ check_pid_and_port()
         wsrep_log_error "$service_name daemon port '$service_port' has been taken"
         exit 16 # EBUSY
     fi
-    check_pid $pid_file && \
-        [ -n "$port_info" ] && [ -n "$is_service" ] && \
+
+    if ! check_pid $pid_file; then
+        wsrep_log_error "$service_name process terminated unexpectedly"
+        exit 10 # ECHILD
+    fi
+
+    [ -n "$port_info" ] && [ -n "$is_service" ] && \
         [ $(cat $pid_file) -eq $service_pid ]
 }
 
@@ -428,7 +433,7 @@ EOF
 
     # wait for SST to complete by monitoring magic file
     while [ ! -r "$MAGIC_FILE" ] && check_pid "$RSYNC_PID" && \
-          ps -p $MYSQLD_PID >/dev/null
+          check_pid "$SOCAT_PID" && ps -p $MYSQLD_PID >/dev/null
     do
         sleep 1
     done
