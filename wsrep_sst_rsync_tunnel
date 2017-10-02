@@ -20,9 +20,8 @@
 # This is a reference script for rsync-based state snapshot tansfer
 # over an encrypted communication channel, managed by socat
 
-RSYNC_PID=                                      # rsync pid file
-RSYNC_CONF=                                     # rsync configuration file
-RSYNC_REAL_PID=                                 # rsync process id
+RSYNC_PID=
+RSYNC_CONF=
 
 SOCAT_PID=                                      # socat pid file
 SOCAT_REAL_PID=                                 # socat process id
@@ -60,8 +59,10 @@ cleanup_tunnel()
 
 cleanup_joiner()
 {
-    wsrep_log_info "Joiner cleanup. rsync PID: $RSYNC_REAL_PID"
-    [ -n "$RSYNC_REAL_PID" ] && cleanup_pid $RSYNC_REAL_PID
+    wsrep_log_info "Joiner cleanup."
+    local PID=$(cat "$RSYNC_PID" 2>/dev/null || echo 0)
+    [ "0" != "$PID" ] && kill $PID && sleep 0.5 && kill -9 $PID >/dev/null 2>&1 \
+    || :
     rm -rf "$RSYNC_CONF"
     rm -rf "$MAGIC_FILE"
     rm -rf "$RSYNC_PID"
@@ -74,7 +75,6 @@ cleanup_joiner()
     fi
 }
 
-# Check whether process is still running.
 check_pid()
 {
     local pid_file=$1
@@ -117,7 +117,7 @@ config_from_cnf()
 {
     local group=$1
     local key=$2
-    echo $($MY_PRINT_DEFAULTS $group | grep -- "--$key=" | cut -d= -f2- | tail -1)
+    echo $($SCRIPT_DIR/my_print_defaults $group | grep -- "--$key=" | cut -d= -f2- | tail -1)
 }
 
 setup_tunnel_args()
@@ -143,20 +143,13 @@ setup_tunnel_args()
 MAGIC_FILE="$WSREP_SST_OPT_DATA/rsync_tunnel_sst_complete"
 rm -rf "$MAGIC_FILE"
 
-BINLOG_TAR_FILE="$WSREP_SST_OPT_DATA/wsrep_sst_binlog.tar"
-BINLOG_N_FILES=1
-rm -f "$BINLOG_TAR_FILE" || :
-
-if ! [ -z $WSREP_SST_OPT_BINLOG ]
-then
-    BINLOG_DIRNAME=$(dirname $WSREP_SST_OPT_BINLOG)
-    BINLOG_FILENAME=$(basename $WSREP_SST_OPT_BINLOG)
-fi
-
 WSREP_LOG_DIR=${WSREP_LOG_DIR:-""}
+SCRIPT_DIR="$(cd $(dirname "$0"); pwd -P)"
+
 # if WSREP_LOG_DIR env. variable is not set, try to get it from my.cnf
 if [ -z "$WSREP_LOG_DIR" ]; then
-    WSREP_LOG_DIR=$($MY_PRINT_DEFAULTS --mysqld \
+    WSREP_LOG_DIR=$($SCRIPT_DIR/my_print_defaults --defaults-file \
+                   "$WSREP_SST_OPT_CONF" mysqld server mysqld-5.5 mariadb mariadb-5.5 \
                     | grep -- '--innodb[-_]log[-_]group[-_]home[-_]dir=' \
                     | cut -b 29- )
 fi
@@ -177,7 +170,7 @@ fi
 
 # New filter - exclude everything except dirs (schemas) and innodb files
 FILTER=(-f '- /lost+found' -f '- /.fseventsd' -f '- /.Trashes'
-        -f '+ /wsrep_sst_binlog.tar' -f '+ /ib_lru_dump' -f '+ /ibdata*' -f '+ /*/' -f '- /*')
+        -f '+ /ib_lru_dump' -f '+ /ibdata*' -f '+ /*/' -f '- /*')
 
 SOCAT_PID="$WSREP_SST_OPT_DATA/$MODULE-socat.pid"
 
@@ -189,6 +182,7 @@ fi
 rm -rf "$SOCAT_PID"
 
 setup_tunnel_args
+
 
 if [ "$WSREP_SST_OPT_ROLE" = "donor" ]
 then
@@ -225,10 +219,7 @@ then
     then
 
         FLUSHED="$WSREP_SST_OPT_DATA/tables_flushed"
-        ERROR="$WSREP_SST_OPT_DATA/sst_error"
-
         rm -rf "$FLUSHED"
-        rm -rf "$ERROR"
 
         # Use deltaxfer only for WAN
         inv=$(basename $0)
@@ -237,21 +228,9 @@ then
 
         echo "flush tables"
 
-        # Wait for :
-        # (a) Tables to be flushed, AND
-        # (b) Cluster state ID & wsrep_gtid_domain_id to be written to the file, OR
-        # (c) ERROR file, in case flush tables operation failed.
-
+        # wait for tables flushed and state ID written to the file
         while [ ! -r "$FLUSHED" ] && ! grep -q ':' "$FLUSHED" >/dev/null 2>&1
         do
-            # Check whether ERROR file exists.
-            if [ -f "$ERROR" ]
-            then
-                # Flush tables operation failed.
-                rm -rf "$ERROR"
-                exit 255
-            fi
-
             sleep 0.2
         done
 
@@ -259,24 +238,6 @@ then
         rm -rf "$FLUSHED"
 
         sync
-
-        if ! [ -z $WSREP_SST_OPT_BINLOG ]
-        then
-            # Prepare binlog files
-            pushd $BINLOG_DIRNAME &> /dev/null
-            binlog_files_full=$(tail -n $BINLOG_N_FILES ${BINLOG_FILENAME}.index)
-            binlog_files=""
-            for ii in $binlog_files_full
-            do
-                binlog_files="$binlog_files $(basename $ii)"
-            done
-            if ! [ -z "$binlog_files" ]
-            then
-                wsrep_log_info "Preparing binlog files for transfer:"
-                tar -cvf $BINLOG_TAR_FILE $binlog_files >&2
-            fi
-            popd &> /dev/null
-        fi
 
         # first, the normal directories, so that we can detect incompatible protocol
         RC=0
@@ -320,8 +281,7 @@ then
         [ "$OS" == "Linux" ] && count=$(grep -c processor /proc/cpuinfo)
         [ "$OS" == "Darwin" -o "$OS" == "FreeBSD" ] && count=$(sysctl -n hw.ncpu)
 
-        find . -maxdepth 1 -mindepth 1 -type d -not -name "lost+found" -print0 | \
-             xargs -I{} -0 -P $count \
+        find . -maxdepth 1 -mindepth 1 -type d -print0 | xargs -I{} -0 -P $count \
              rsync --owner --group --perms --links --specials \
              --ignore-times --inplace --recursive --delete --quiet \
              $WHOLE_FILE_OPT --exclude '*/ib_logfile*' "$WSREP_SST_OPT_DATA"/{}/ \
@@ -336,10 +296,7 @@ then
 
     else # BYPASS
         wsrep_log_info "Bypassing state dump."
-
-        # Store donor's wsrep GTID (state ID) and wsrep_gtid_domain_id
-        # (separated by a space).
-        STATE="$WSREP_SST_OPT_GTID $WSREP_SST_OPT_GTID_DOMAIN_ID"
+        STATE="$WSREP_SST_OPT_GTID"
     fi
 
     echo "continue" # now server can resume updating data
@@ -387,18 +344,11 @@ then
 
     RSYNC_CONF="$WSREP_SST_OPT_DATA/$MODULE.conf"
 
-    if [ -n "${MYSQL_TMP_DIR:-}" ] ; then
-      SILENT="log file = $MYSQL_TMP_DIR/rsynd.log"
-    else
-      SILENT=""
-    fi
-
 cat << EOF > "$RSYNC_CONF"
 pid file = $RSYNC_PID
 use chroot = no
 read only = no
 timeout = 300
-$SILENT
 [$MODULE]
     path = $WSREP_SST_OPT_DATA
 [$MODULE-log_dir]
@@ -445,27 +395,9 @@ EOF
         exit 32
     fi
 
-    if ! [ -z $WSREP_SST_OPT_BINLOG ]
-    then
-
-        pushd $BINLOG_DIRNAME &> /dev/null
-        if [ -f $BINLOG_TAR_FILE ]
-        then
-            # Clean up old binlog files first
-            rm -f ${BINLOG_FILENAME}.*
-            wsrep_log_info "Extracting binlog files:"
-            tar -xvf $BINLOG_TAR_FILE >&2
-            for ii in $(ls -1 ${BINLOG_FILENAME}.*)
-            do
-                echo ${BINLOG_DIRNAME}/${ii} >> ${BINLOG_FILENAME}.index
-            done
-        fi
-        popd &> /dev/null
-    fi
     if [ -r "$MAGIC_FILE" ]
     then
-        # UUID:seqno & wsrep_gtid_domain_id is received here.
-        cat "$MAGIC_FILE" # Output : UUID:seqno wsrep_gtid_domain_id
+        cat "$MAGIC_FILE" # output UUID:seqno
     else
         # this message should cause joiner to abort
         echo "rsync process ended without creating '$MAGIC_FILE'"
@@ -476,7 +408,5 @@ else
     wsrep_log_error "Unrecognized role: '$WSREP_SST_OPT_ROLE'"
     exit 22 # EINVAL
 fi
-
-rm -f $BINLOG_TAR_FILE || :
 
 exit 0
