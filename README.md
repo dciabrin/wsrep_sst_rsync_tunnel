@@ -1,7 +1,7 @@
 socat tunnel for encrypted rsync SST
 ====================================
 
-`wsrep_sst_rsync_tunnel` is an extension of the rsync-based SST
+`wsrep_sst_rsync_tunnel` is an extension of the rsync-based [SST](http://galeracluster.com/documentation-webpages/glossary.html#term-state-snapshot-transfer)
 implementation that ships with mariadb. Its purpose is to encrypt
 communication between the donor and the joiner during an SST.
 
