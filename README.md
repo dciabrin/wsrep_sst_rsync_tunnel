@@ -126,7 +126,7 @@ Assuming that the certificate for the FreeIPA server is available at
 
 ## License
 
-Copyright © 2017 [Damien Ciabrini](https://github.com/dciabrin).
+Copyright © 2017-2020 [Damien Ciabrini](https://github.com/dciabrin).
 This work is derived from the original `wsrep_rsync_sst`, copyright
 © 2010-2014 [Codership Oy](https://github.com/codership).
 Released under the GNU GPLv2.

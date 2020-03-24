@@ -1,7 +1,7 @@
 #!/bin/bash -ue
 
 # Copyright (C) 2010-2014 Codership Oy
-# Copyright (C) 2017 Damien Ciabrini <damien.ciabrini@gmail.com>
+# Copyright (C) 2017-2020 Damien Ciabrini <damien.ciabrini@gmail.com>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -53,8 +53,10 @@ cleanup_pid()
 
 cleanup_tunnel()
 {
-    wsrep_log_info "cleanup socat PID: $SOCAT_REAL_PID"
-    [ -n "$SOCAT_REAL_PID" ] && cleanup_pid $SOCAT_REAL_PID
+    if [ -n "$SOCAT_REAL_PID" ] && ps -p "$SOCAT_REAL_PID" >/dev/null 2>&1; then
+	wsrep_log_info "cleanup socat PID: $SOCAT_REAL_PID"
+	cleanup_pid $SOCAT_REAL_PID
+    fi
     rm -rf "$SOCAT_PID"
 }
 
@@ -347,6 +349,10 @@ then
     echo "$STATE" > "$MAGIC_FILE"
     rsync --archive --quiet --checksum "$MAGIC_FILE" rsync://$TARGET_ADDR
 
+    # to avoid cleanup race, stop tunnel before declaring the SST finished.
+    # This ensures galera won't start a new SST locally before we exit.
+    cleanup_tunnel
+
     echo "done $STATE"
 
 elif [ "$WSREP_SST_OPT_ROLE" = "joiner" ]
@@ -437,6 +443,10 @@ EOF
     do
         sleep 1
     done
+
+    # to avoid cleanup race, we can tear down the socat tunnel now
+    # before signaling the end of the SST to galera.
+    cleanup_tunnel
 
     if ! ps -p $MYSQLD_PID >/dev/null
     then
